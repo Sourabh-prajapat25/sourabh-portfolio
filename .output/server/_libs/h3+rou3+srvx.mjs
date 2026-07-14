@@ -424,6 +424,6 @@ var H3Core = class {
 		return routeMiddleware ? [...globalMiddleware, ...routeMiddleware] : globalMiddleware;
 	}
 };
-new RegExp(/%(?:25)*(?:2f|5c)/i.source, "gi");
+/%(?:25)*(?:2f|5c)/i.source;
 //#endregion
 export { FastResponse as a, toRequest as i, HTTPError as n, FastURL as o, defineLazyEventHandler as r, H3Core as t };

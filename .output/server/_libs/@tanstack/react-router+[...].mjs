@@ -1352,6 +1352,26 @@ function isNotFound(obj) {
 	return obj?.isNotFound === true;
 }
 //#endregion
+//#region node_modules/@tanstack/router-core/dist/esm/scroll-restoration.js
+function getSafeSessionStorage() {
+	try {
+		return sessionStorage;
+	} catch {
+		return;
+	}
+}
+var storageKey = "tsr-scroll-restoration-v1_3";
+getSafeSessionStorage();
+/**
+* The default `getKey` function for `useScrollRestoration`.
+* It returns the `key` from the location state or the `href` of the location.
+*
+* The `location.href` is used as a fallback to support the use case where the location state is not available like the initial render.
+*/
+var defaultGetScrollRestorationKey = (location) => {
+	return location.state.__TSR_key || location.href;
+};
+//#endregion
 //#region node_modules/@tanstack/router-core/dist/esm/qss.js
 /**
 * Program is a reimplementation of the `qss` package:
@@ -1523,6 +1543,203 @@ function isRedirect(obj) {
 /** True if value is a redirect with a resolved `href` location. */
 function isResolvedRedirect(obj) {
 	return isRedirect(obj) && !!obj.options.href;
+}
+//#endregion
+//#region node_modules/@tanstack/router-core/dist/esm/rewrite.js
+/** Compose multiple rewrite pairs into a single in/out rewrite. */
+function composeRewrites(rewrites) {
+	return {
+		input: ({ url }) => {
+			for (const rewrite of rewrites) url = executeRewriteInput(rewrite, url);
+			return url;
+		},
+		output: ({ url }) => {
+			for (let i = rewrites.length - 1; i >= 0; i--) url = executeRewriteOutput(rewrites[i], url);
+			return url;
+		}
+	};
+}
+/** Create a rewrite pair that strips/adds a basepath on input/output. */
+function rewriteBasepath(opts) {
+	const trimmedBasepath = trimPath(opts.basepath);
+	const normalizedBasepath = `/${trimmedBasepath}`;
+	const checkBasepath = opts.caseSensitive ? normalizedBasepath : normalizedBasepath.toLowerCase();
+	const checkBasepathWithSlash = `${checkBasepath}/`;
+	return {
+		input: ({ url }) => {
+			const pathname = opts.caseSensitive ? url.pathname : url.pathname.toLowerCase();
+			if (pathname === checkBasepath) url.pathname = "/";
+			else if (pathname.startsWith(checkBasepathWithSlash)) url.pathname = url.pathname.slice(normalizedBasepath.length);
+			return url;
+		},
+		output: ({ url }) => {
+			url.pathname = joinPaths([
+				"/",
+				trimmedBasepath,
+				url.pathname
+			]);
+			return url;
+		}
+	};
+}
+/** Execute a location input rewrite if provided. */
+function executeRewriteInput(rewrite, url) {
+	const res = rewrite?.input?.({ url });
+	if (res) {
+		if (typeof res === "string") return new URL(res);
+		else if (res instanceof URL) return res;
+	}
+	return url;
+}
+/** Execute a location output rewrite if provided. */
+function executeRewriteOutput(rewrite, url) {
+	const res = rewrite?.output?.({ url });
+	if (res) {
+		if (typeof res === "string") return new URL(res);
+		else if (res instanceof URL) return res;
+	}
+	return url;
+}
+//#endregion
+//#region node_modules/@tanstack/router-core/dist/esm/stores.js
+/** SSR non-reactive createMutableStore */
+function createNonReactiveMutableStore(initialValue) {
+	let value = initialValue;
+	return {
+		get() {
+			return value;
+		},
+		set(nextOrUpdater) {
+			value = functionalUpdate(nextOrUpdater, value);
+		}
+	};
+}
+/** SSR non-reactive createReadonlyStore */
+function createNonReactiveReadonlyStore(read) {
+	return { get() {
+		return read();
+	} };
+}
+function createRouterStores(initialState, config) {
+	const { createMutableStore, createReadonlyStore, batch, init } = config;
+	const matchStores = /* @__PURE__ */ new Map();
+	const pendingMatchStores = /* @__PURE__ */ new Map();
+	const cachedMatchStores = /* @__PURE__ */ new Map();
+	const status = createMutableStore(initialState.status);
+	const loadedAt = createMutableStore(initialState.loadedAt);
+	const isLoading = createMutableStore(initialState.isLoading);
+	const isTransitioning = createMutableStore(initialState.isTransitioning);
+	const location = createMutableStore(initialState.location);
+	const resolvedLocation = createMutableStore(initialState.resolvedLocation);
+	const statusCode = createMutableStore(initialState.statusCode);
+	const redirect = createMutableStore(initialState.redirect);
+	const matchesId = createMutableStore([]);
+	const pendingIds = createMutableStore([]);
+	const cachedIds = createMutableStore([]);
+	const matches = createReadonlyStore(() => readPoolMatches(matchStores, matchesId.get()));
+	const pendingMatches = createReadonlyStore(() => readPoolMatches(pendingMatchStores, pendingIds.get()));
+	const cachedMatches = createReadonlyStore(() => readPoolMatches(cachedMatchStores, cachedIds.get()));
+	const firstId = createReadonlyStore(() => matchesId.get()[0]);
+	const hasPending = createReadonlyStore(() => matchesId.get().some((matchId) => {
+		return matchStores.get(matchId)?.get().status === "pending";
+	}));
+	const matchRouteDeps = createReadonlyStore(() => ({
+		locationHref: location.get().href,
+		resolvedLocationHref: resolvedLocation.get()?.href,
+		status: status.get()
+	}));
+	const __store = createReadonlyStore(() => ({
+		status: status.get(),
+		loadedAt: loadedAt.get(),
+		isLoading: isLoading.get(),
+		isTransitioning: isTransitioning.get(),
+		matches: matches.get(),
+		location: location.get(),
+		resolvedLocation: resolvedLocation.get(),
+		statusCode: statusCode.get(),
+		redirect: redirect.get()
+	}));
+	const matchStoreByRouteIdCache = createLRUCache(64);
+	function getRouteMatchStore(routeId) {
+		let cached = matchStoreByRouteIdCache.get(routeId);
+		if (!cached) {
+			cached = createReadonlyStore(() => {
+				const ids = matchesId.get();
+				for (const id of ids) {
+					const matchStore = matchStores.get(id);
+					if (matchStore && matchStore.routeId === routeId) return matchStore.get();
+				}
+			});
+			matchStoreByRouteIdCache.set(routeId, cached);
+		}
+		return cached;
+	}
+	const store = {
+		status,
+		loadedAt,
+		isLoading,
+		isTransitioning,
+		location,
+		resolvedLocation,
+		statusCode,
+		redirect,
+		matchesId,
+		pendingIds,
+		cachedIds,
+		matches,
+		pendingMatches,
+		cachedMatches,
+		firstId,
+		hasPending,
+		matchRouteDeps,
+		matchStores,
+		pendingMatchStores,
+		cachedMatchStores,
+		__store,
+		getRouteMatchStore,
+		setMatches,
+		setPending,
+		setCached
+	};
+	setMatches(initialState.matches);
+	init?.(store);
+	function setMatches(nextMatches) {
+		reconcileMatchPool(nextMatches, matchStores, matchesId, createMutableStore, batch);
+	}
+	function setPending(nextMatches) {
+		reconcileMatchPool(nextMatches, pendingMatchStores, pendingIds, createMutableStore, batch);
+	}
+	function setCached(nextMatches) {
+		reconcileMatchPool(nextMatches, cachedMatchStores, cachedIds, createMutableStore, batch);
+	}
+	return store;
+}
+function readPoolMatches(pool, ids) {
+	const matches = [];
+	for (const id of ids) {
+		const matchStore = pool.get(id);
+		if (matchStore) matches.push(matchStore.get());
+	}
+	return matches;
+}
+function reconcileMatchPool(nextMatches, pool, idStore, createMutableStore, batch) {
+	const nextIds = nextMatches.map((d) => d.id);
+	const nextIdSet = new Set(nextIds);
+	batch(() => {
+		for (const id of pool.keys()) if (!nextIdSet.has(id)) pool.delete(id);
+		for (const nextMatch of nextMatches) {
+			const existing = pool.get(nextMatch.id);
+			if (!existing) {
+				const matchStore = createMutableStore(nextMatch);
+				matchStore.routeId = nextMatch.routeId;
+				pool.set(nextMatch.id, matchStore);
+				continue;
+			}
+			existing.routeId = nextMatch.routeId;
+			if (existing.get() !== nextMatch) existing.set(nextMatch);
+		}
+		if (!arraysEqual(idStore.get(), nextIds)) idStore.set(nextIds);
+	});
 }
 //#endregion
 //#region node_modules/@tanstack/router-core/dist/esm/load-matches.js
@@ -2157,203 +2374,6 @@ var componentTypes = [
 	"notFoundComponent"
 ];
 //#endregion
-//#region node_modules/@tanstack/router-core/dist/esm/rewrite.js
-/** Compose multiple rewrite pairs into a single in/out rewrite. */
-function composeRewrites(rewrites) {
-	return {
-		input: ({ url }) => {
-			for (const rewrite of rewrites) url = executeRewriteInput(rewrite, url);
-			return url;
-		},
-		output: ({ url }) => {
-			for (let i = rewrites.length - 1; i >= 0; i--) url = executeRewriteOutput(rewrites[i], url);
-			return url;
-		}
-	};
-}
-/** Create a rewrite pair that strips/adds a basepath on input/output. */
-function rewriteBasepath(opts) {
-	const trimmedBasepath = trimPath(opts.basepath);
-	const normalizedBasepath = `/${trimmedBasepath}`;
-	const checkBasepath = opts.caseSensitive ? normalizedBasepath : normalizedBasepath.toLowerCase();
-	const checkBasepathWithSlash = `${checkBasepath}/`;
-	return {
-		input: ({ url }) => {
-			const pathname = opts.caseSensitive ? url.pathname : url.pathname.toLowerCase();
-			if (pathname === checkBasepath) url.pathname = "/";
-			else if (pathname.startsWith(checkBasepathWithSlash)) url.pathname = url.pathname.slice(normalizedBasepath.length);
-			return url;
-		},
-		output: ({ url }) => {
-			url.pathname = joinPaths([
-				"/",
-				trimmedBasepath,
-				url.pathname
-			]);
-			return url;
-		}
-	};
-}
-/** Execute a location input rewrite if provided. */
-function executeRewriteInput(rewrite, url) {
-	const res = rewrite?.input?.({ url });
-	if (res) {
-		if (typeof res === "string") return new URL(res);
-		else if (res instanceof URL) return res;
-	}
-	return url;
-}
-/** Execute a location output rewrite if provided. */
-function executeRewriteOutput(rewrite, url) {
-	const res = rewrite?.output?.({ url });
-	if (res) {
-		if (typeof res === "string") return new URL(res);
-		else if (res instanceof URL) return res;
-	}
-	return url;
-}
-//#endregion
-//#region node_modules/@tanstack/router-core/dist/esm/stores.js
-/** SSR non-reactive createMutableStore */
-function createNonReactiveMutableStore(initialValue) {
-	let value = initialValue;
-	return {
-		get() {
-			return value;
-		},
-		set(nextOrUpdater) {
-			value = functionalUpdate(nextOrUpdater, value);
-		}
-	};
-}
-/** SSR non-reactive createReadonlyStore */
-function createNonReactiveReadonlyStore(read) {
-	return { get() {
-		return read();
-	} };
-}
-function createRouterStores(initialState, config) {
-	const { createMutableStore, createReadonlyStore, batch, init } = config;
-	const matchStores = /* @__PURE__ */ new Map();
-	const pendingMatchStores = /* @__PURE__ */ new Map();
-	const cachedMatchStores = /* @__PURE__ */ new Map();
-	const status = createMutableStore(initialState.status);
-	const loadedAt = createMutableStore(initialState.loadedAt);
-	const isLoading = createMutableStore(initialState.isLoading);
-	const isTransitioning = createMutableStore(initialState.isTransitioning);
-	const location = createMutableStore(initialState.location);
-	const resolvedLocation = createMutableStore(initialState.resolvedLocation);
-	const statusCode = createMutableStore(initialState.statusCode);
-	const redirect = createMutableStore(initialState.redirect);
-	const matchesId = createMutableStore([]);
-	const pendingIds = createMutableStore([]);
-	const cachedIds = createMutableStore([]);
-	const matches = createReadonlyStore(() => readPoolMatches(matchStores, matchesId.get()));
-	const pendingMatches = createReadonlyStore(() => readPoolMatches(pendingMatchStores, pendingIds.get()));
-	const cachedMatches = createReadonlyStore(() => readPoolMatches(cachedMatchStores, cachedIds.get()));
-	const firstId = createReadonlyStore(() => matchesId.get()[0]);
-	const hasPending = createReadonlyStore(() => matchesId.get().some((matchId) => {
-		return matchStores.get(matchId)?.get().status === "pending";
-	}));
-	const matchRouteDeps = createReadonlyStore(() => ({
-		locationHref: location.get().href,
-		resolvedLocationHref: resolvedLocation.get()?.href,
-		status: status.get()
-	}));
-	const __store = createReadonlyStore(() => ({
-		status: status.get(),
-		loadedAt: loadedAt.get(),
-		isLoading: isLoading.get(),
-		isTransitioning: isTransitioning.get(),
-		matches: matches.get(),
-		location: location.get(),
-		resolvedLocation: resolvedLocation.get(),
-		statusCode: statusCode.get(),
-		redirect: redirect.get()
-	}));
-	const matchStoreByRouteIdCache = createLRUCache(64);
-	function getRouteMatchStore(routeId) {
-		let cached = matchStoreByRouteIdCache.get(routeId);
-		if (!cached) {
-			cached = createReadonlyStore(() => {
-				const ids = matchesId.get();
-				for (const id of ids) {
-					const matchStore = matchStores.get(id);
-					if (matchStore && matchStore.routeId === routeId) return matchStore.get();
-				}
-			});
-			matchStoreByRouteIdCache.set(routeId, cached);
-		}
-		return cached;
-	}
-	const store = {
-		status,
-		loadedAt,
-		isLoading,
-		isTransitioning,
-		location,
-		resolvedLocation,
-		statusCode,
-		redirect,
-		matchesId,
-		pendingIds,
-		cachedIds,
-		matches,
-		pendingMatches,
-		cachedMatches,
-		firstId,
-		hasPending,
-		matchRouteDeps,
-		matchStores,
-		pendingMatchStores,
-		cachedMatchStores,
-		__store,
-		getRouteMatchStore,
-		setMatches,
-		setPending,
-		setCached
-	};
-	setMatches(initialState.matches);
-	init?.(store);
-	function setMatches(nextMatches) {
-		reconcileMatchPool(nextMatches, matchStores, matchesId, createMutableStore, batch);
-	}
-	function setPending(nextMatches) {
-		reconcileMatchPool(nextMatches, pendingMatchStores, pendingIds, createMutableStore, batch);
-	}
-	function setCached(nextMatches) {
-		reconcileMatchPool(nextMatches, cachedMatchStores, cachedIds, createMutableStore, batch);
-	}
-	return store;
-}
-function readPoolMatches(pool, ids) {
-	const matches = [];
-	for (const id of ids) {
-		const matchStore = pool.get(id);
-		if (matchStore) matches.push(matchStore.get());
-	}
-	return matches;
-}
-function reconcileMatchPool(nextMatches, pool, idStore, createMutableStore, batch) {
-	const nextIds = nextMatches.map((d) => d.id);
-	const nextIdSet = new Set(nextIds);
-	batch(() => {
-		for (const id of pool.keys()) if (!nextIdSet.has(id)) pool.delete(id);
-		for (const nextMatch of nextMatches) {
-			const existing = pool.get(nextMatch.id);
-			if (!existing) {
-				const matchStore = createMutableStore(nextMatch);
-				matchStore.routeId = nextMatch.routeId;
-				pool.set(nextMatch.id, matchStore);
-				continue;
-			}
-			existing.routeId = nextMatch.routeId;
-			if (existing.get() !== nextMatch) existing.set(nextMatch);
-		}
-		if (!arraysEqual(idStore.get(), nextIds)) idStore.set(nextIds);
-	});
-}
-//#endregion
 //#region node_modules/@tanstack/router-core/dist/esm/router.js
 /**
 * Compute whether path, href or hash changed between previous and current
@@ -2370,7 +2390,6 @@ function getLocationChangeInfo(location, resolvedLocation) {
 		hashChanged: fromLocation?.hash !== toLocation.hash
 	};
 }
-var locationHistoryActions = /* @__PURE__ */ new WeakMap();
 /**
 * Core, framework-agnostic router engine that powers TanStack Router.
 *
@@ -2839,8 +2858,7 @@ var RouterCore = class {
 				this.startTransition(async () => {
 					try {
 						this.beforeLoad();
-						if (historyAction) locationHistoryActions.set(this.latestLocation, historyAction);
-						else locationHistoryActions.delete(this.latestLocation);
+						if (historyAction) this._scroll.hash = historyAction === "PUSH" || historyAction === "REPLACE";
 						const next = this.latestLocation;
 						const locationChangeInfo = getLocationChangeInfo(next, this.stores.resolvedLocation.get());
 						if (!this.stores.redirect.get()) this.emit({
@@ -3464,26 +3482,6 @@ function extractStrictParams(route, accumulatedParams) {
 		Object.assign(accumulatedParams, result);
 	}
 }
-//#endregion
-//#region node_modules/@tanstack/router-core/dist/esm/scroll-restoration.js
-function getSafeSessionStorage() {
-	try {
-		return sessionStorage;
-	} catch {
-		return;
-	}
-}
-var storageKey = "tsr-scroll-restoration-v1_3";
-getSafeSessionStorage();
-/**
-* The default `getKey` function for `useScrollRestoration`.
-* It returns the `key` from the location state or the `href` of the location.
-*
-* The `location.href` is used as a fallback to support the use case where the location state is not available like the initial render.
-*/
-var defaultGetScrollRestorationKey = (location) => {
-	return location.state.__TSR_key || location.href;
-};
 //#endregion
 //#region node_modules/@tanstack/router-core/dist/esm/link.js
 var preloadWarning = "Error preloading route! ☝️";
@@ -14469,7 +14467,7 @@ function makeMainStream(serverSsr, appStream, opts) {
 //#endregion
 //#region node_modules/isbot/index.mjs
 var import_server_edge = /* @__PURE__ */ __toESM(require_server_edge(), 1);
-var fullPattern = " daum[ /]| deusu/|(?:^|[^g])news(?!sapphire)|(?<! channel/|google/)google(?!(?:wv|app|/google| pixel))|(?<! cu)bots?(?:\\b|_)|(?<!cam)scan|(?<!lib)http|24x7|;\\s\\w+;$|@[a-z][\\w-]+\\.|\\(\\)|\\.com\\b|\\b\\w+\\.ai|\\bbw/|\\bdlc\\b|\\bort/|\\bperl\\b|\\btime/|\\||^[\\w \\.\\-\\(?:\\):%]+(?:/v?\\d+(?:\\.\\d+)?(?:\\.\\d{1,10})*?)?(?:,|$)|^[\\w\\-]+/[\\w]+$|^[^ ]{50,}$|^\\d+\\b|^\\W|^\\w*search\\b|^\\w+/[\\w\\(\\)]*$|^\\w+/\\d\\.\\d\\s\\([\\w@]+\\)$|^active|^ad muncher|^amaya|^apache/|^avsdevicesdk/|^azure|^biglotron|^blackbox exporter|^bot|^clamav[ /]|^claude-code/|^client/|^cobweb/|^custom|^ddg[_-]android|^discourse|^dispatch/\\d|^downcast/|^duckduckgo|^email|^exodusmovement|^facebook|^getright/|^gozilla/|^hobbit|^hotzonu|^hwcdn/|^igetter/|^jeode/|^jetty/|^jigsaw|^microsoft bits|^movabletype|^mozilla/\\d\\.\\d\\s[\\w\\.-]+$|^mozilla/\\d\\.\\d\\s\\((?:compatible;)?(?:\\s?[\\w\\d-.]+\\/\\d+\\.\\d+)?\\)$|^navermailapp|^netsurf|^offline|^openai/|^owler|^php|^postman|^ps_daily/|^python|^rank|^read|^reed|^remove\\.bg/|^rest|^rss|^snapchat|^sora |^space bison|^stape/|^svn|^swcd |^taringa|^thumbor/|^track|^w3c|^webbandit/|^webcopier|^wget|^whatsapp|^wordpress|^xenu link sleuth|^yahoo|^yandex|^zdm/\\d|^zoom marketplace/|abuse|advisor|agent\\b|analyzer|archive|ask jeeves/teoma|attracta|audit|bluecoat drtr|browsex|burpcollaborator|capture|catch|check\\b|checker|chrome-lighthouse|chromeframe|classifier|cloudflare|collapsify\\b|convertify|cookiehubverify/|crawl|cursor/|cypress/|dareboost|datanyze|dejaclick|detect|discovery|dmbrowser|download|exaleadcloudview|feed|fetcher|firephp|foregenix|functionize|grab|hardenize\\b|headless|hotjar|httrack|hubspot marketing grader|ibisbrowser|infrawatch|insight|inspect|iplabel|java(?!;)|library|linkcheck|linktiger|mail\\.ru/|manager|manus-user/|marketgoo/|measure|monitor\\b|neustar wpm|node\\b|nutch|offbyone|openvas|optimize|pageburst|pagespeed|parser|phantomjs|pingdom|playwright|powermarks|preview|productfinder|prospectingstudio|proxy|ptst[ /]\\d|radar|readable/|retriever|rexx;|rigor|rss\\b|scrape|securityheaders|selenium|server|silktide|sindup/|sogou|sparkler/|speedcurve|spider|splash|statuscake|supercleaner|synapse|synthetic|testlocally|tools|torrent|transcoder|upday/|url|validator|virtuoso|wappalyzer|watchtowr|webglance|webkit2png|whatcms/|xtate/";
+var fullPattern = " daum[ /]| deusu/|(?:^|[^g])news(?!sapphire)|(?<! channel/|google/)google(?!(?:wv|app|/google| pixel))|(?<! cu)bots?(?:\\b|_)|(?<!cam)scan|(?<!lib)http|24x7|;\\s\\w+;$|@[a-z][\\w-]+\\.|\\(\\)|\\.com\\b|\\b\\w+\\.ai|\\bbw/|\\bdlc\\b|\\bort/|\\bperl\\b|\\btime/|\\||^[<\\(;]|^[\\w \\.\\-\\(?:\\):%]+(?:/v?\\d+(?:\\.\\d+)?(?:\\.\\d{1,10})*?)?(?:,|$)|^[\\w\\-]+/[\\w]+$|^[^ ]{50,}$|^\\d+\\b|^\\w*search\\b|^\\w+/[\\w\\(\\)]*$|^\\w+/\\d\\.\\d\\s\\([\\w@]+\\)$|^active|^ad muncher|^amaya|^apache/|^avsdevicesdk/|^azure|^biglotron|^blackbox exporter|^bot|^clamav[ /]|^claude-code/|^client/|^cobweb/|^custom|^ddg[_-]android|^discourse|^dispatch/\\d|^downcast/|^duckduckgo|^email|^exodusmovement|^facebook|^getright/|^gozilla/|^hobbit|^hotzonu|^hwcdn/|^igetter/|^jeode/|^jetty/|^jigsaw|^microsoft bits|^movabletype|^mozilla/\\d\\.\\d\\s[\\w\\.-]+$|^mozilla/\\d\\.\\d\\s\\((?:compatible;)?(?:\\s?[\\w\\d-.]+\\/\\d+\\.\\d+)?\\)$|^navermailapp|^netsurf|^offline|^openai/|^owler|^php|^postman|^ps_daily/|^python|^rank|^read|^reed|^remove\\.bg/|^rest|^rss|^snapchat|^sora |^space bison|^stape/|^svn|^swcd |^taringa|^thumbor/|^track|^w3c|^webbandit/|^webcopier|^wget|^whatsapp|^wordpress|^xenu link sleuth|^yahoo|^yandex|^zdm/\\d|^zoom marketplace/|abuse|advisor|agent\\b|analyzer|archive|ask jeeves/teoma|attracta|audit|bluecoat drtr|browsex|burpcollaborator|capture|catch|check\\b|checker|chrome-lighthouse|chromeframe|classifier|cloudflare|collapsify\\b|convertify|cookiehubverify/|crawl|cursor/|cypress/|dareboost|datanyze|dejaclick|detect|discovery|dmbrowser|download|exaleadcloudview|feed|fetcher|firephp|foregenix|functionize|grab|hardenize\\b|headless|hotjar|httrack|hubspot marketing grader|ibisbrowser|infrawatch|insight|inspect|iplabel|java(?!;)|library|linkcheck|linktiger|mail\\.ru/|manager|manus-user/|marketgoo/|measure|monitor\\b|neustar wpm|node\\b|nutch|offbyone|openvas|optimize|pageburst|pagespeed|parser|phantomjs|pingdom|playwright|powermarks|preview|productfinder|prospectingstudio|proxy|ptst[ /]\\d|radar|readable/|retriever|rexx;|rigor|rss\\b|scrape|securityheaders|selenium|server|silktide|sindup/|sogou|sparkler/|speedcurve|spider|splash|statuscake|supercleaner|synapse|synthetic|testlocally|tools|torrent|transcoder|upday/|url|validator|virtuoso|wappalyzer|watchtowr|webglance|webkit2png|whatcms/|xtate/";
 var naivePattern = /bot|crawl|http|lighthouse|scan|search|spider/i;
 var pattern;
 function getPattern() {
